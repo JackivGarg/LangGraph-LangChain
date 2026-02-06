@@ -3,3 +3,12 @@ beautifulsoup4>=4.12.2
 lxml>=5.1.0
 openai>=1.12.0
 python-dotenv>=1.0.1
+langchain
+langgraph
+langchain_community
+langchain_core
+langchain_groq
+langchain_openai
+faiss-cpu
+streamlit
+tavily-python
