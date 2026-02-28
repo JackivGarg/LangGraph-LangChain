@@ -26,8 +26,8 @@ def create_vector_store(txt_file: str, save_dir: str):
         raw_text = f.read()
 
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000,
-        chunk_overlap=200
+        chunk_size=600,
+        chunk_overlap=100
     )
 
     texts = splitter.split_text(raw_text)
