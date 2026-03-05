@@ -13,14 +13,15 @@ class Route1(BaseModel):
         "SEND_EMAIL",
         "STOP"
     ]
-    category: Optional[Literal[
+    category: Literal[
+        None,
         "admissions",
         "programs",
         "hostel",
         "placements",
         "policies",
         "general"
-    ]] = None
+    ] = None
 
 
 class State(TypedDict):

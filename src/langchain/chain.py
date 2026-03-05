@@ -1,3 +1,4 @@
+import time
 from langchain_core.output_parsers import StrOutputParser
 from langchain_community.vectorstores import FAISS
 from operator import itemgetter
@@ -8,28 +9,48 @@ from src.langchain.history import get_session_history
 from src.vectorstores import load_vector_store
 from src.config import VALID_CATEGORIES
 from src.embeddings import embedding
+from src.agent.prompts import router_template, query_rewriter_template
+from src.agent.states.states import Route1
 
 
-def search_all_vectorstores(query: str, k: int = 3):
-    all_texts = []
-    all_metadatas = []
-    
-    for category in VALID_CATEGORIES:
-        try:
-            vs = load_vector_store(category)
-            docs = vs.similarity_search(query, k=k)
-            for doc in docs:
-                all_texts.append(doc.page_content)
-                all_metadatas.append(doc.metadata)
-        except Exception as e:
-            continue
-    
-    if all_texts:
-        return FAISS.from_texts(all_texts, embedding, metadatas=all_metadatas)
-    return None
+def rewrite_query(query: str, history_str: str):
+    from langchain_core.output_parsers import StrOutputParser
+    rewriter_chain = query_rewriter_template | llm | StrOutputParser()
+    interpreted = rewriter_chain.invoke({
+        "user_input": query,
+        "history": history_str
+    })
+    return interpreted.strip().split('\n')[0]
+
+
+def route_to_category(query: str, history_str: str):
+    try:
+        router_chain = router_template | llm.with_structured_output(Route1)
+        route_result = router_chain.invoke({
+            "user_input": query,
+            "history": history_str,
+            "context": ""
+        })
+        category = route_result.category if route_result.action == "VECTOR_STORE" else "general"
+        if category not in VALID_CATEGORIES or category is None:
+            category = "general"
+        return category, route_result.action
+    except Exception as e:
+        return "general", "VECTOR_STORE"
+
+
+def search_specific_vectorstore(query: str, category: str, k: int = 3):
+    try:
+        vs = load_vector_store(category)
+        docs = vs.similarity_search(query, k=k)
+        return docs
+    except Exception as e:
+        return []
 
 
 def langchain_mode(query: str, session_id: str):
+    start_time = time.time()
+    
     history = get_session_history(session_id)
     history_messages = history.messages
     
@@ -38,19 +59,40 @@ def langchain_mode(query: str, session_id: str):
         for m in history_messages
     )
     
-    vs = search_all_vectorstores(query, k=3)
+    original_query = query
+    interpreted_query = rewrite_query(query, history_str)
     
-    if vs is None:
-        yield "Sorry, I couldn't find any relevant information."
+    category, action = route_to_category(interpreted_query, history_str)
+    
+    docs = search_specific_vectorstore(interpreted_query, category, k=3)
+    
+    if not docs:
+        full_response = "Sorry, I couldn't find any relevant information."
+        for chunk in [full_response]:
+            yield chunk
+        
+        history.add_user_message(query)
+        history.add_ai_message(full_response)
+        
+        response_time = time.time() - start_time
+        yield {"__stats__": {
+            "original_query": original_query,
+            "interpreted_query": interpreted_query,
+            "action": action,
+            "category": category,
+            "response_time": round(response_time, 2),
+            "word_count": len(full_response.split()),
+            "char_count": len(full_response)
+        }}
         return
     
-    retriever = vs.as_retriever(search_kwargs={"k": 3})
+    context = "\n\n".join(doc.page_content for doc in docs)
     
     parser = StrOutputParser()
     
     pro_chain = (
         {
-            "context": itemgetter("user_input") | retriever,
+            "context": lambda x: context,
             "user_input": itemgetter("user_input"),
             "history": itemgetter("history")
         }
@@ -60,9 +102,23 @@ def langchain_mode(query: str, session_id: str):
     )
     
     full_response = ""
-    for chunk in pro_chain.invoke({"user_input": query, "history": history_str}):
+    for chunk in pro_chain.invoke({"user_input": interpreted_query, "history": history_str}):
         full_response += chunk
         yield chunk
     
     history.add_user_message(query)
     history.add_ai_message(full_response)
+    
+    response_time = time.time() - start_time
+    
+    stats = {
+        "original_query": original_query,
+        "interpreted_query": interpreted_query,
+        "action": action,
+        "category": category,
+        "response_time": round(response_time, 2),
+        "word_count": len(full_response.split()),
+        "char_count": len(full_response)
+    }
+    
+    yield {"__stats__": stats}
