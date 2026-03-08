@@ -1,14 +1,20 @@
 import sys
 import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
-
+import httpx
 import streamlit as st
-from src.langchain import langchain_mode
-from src.agent import langgraph_route_and_respond
-from src.agent.prompts import query_rewriter_template
-from src.llm import llm
+from src.config import VALID_CATEGORIES
 
 st.set_page_config(page_title="Benny AI - Unified Bot", page_icon="🤖", layout="wide")
+
+# API Configuration
+API_URL = "http://localhost:8000"
+
+# Admin Credentials (as requested)
+ADMIN_CREDENTIALS = {
+    "name": "JACKIV GARG",
+    "email": "jackiv@gmail.com",
+    "password": "admin@123"
+}
 
 if "human_review_toggle" not in st.session_state:
     st.session_state.human_review_toggle = False
@@ -20,7 +26,10 @@ if "pending_session_id" not in st.session_state:
     st.session_state.pending_session_id = None
 if "human_review_waiting" not in st.session_state:
     st.session_state.human_review_waiting = False
-
+if "admin_logged_in" not in st.session_state:
+    st.session_state.admin_logged_in = False
+if "admin_user" not in st.session_state:
+    st.session_state.admin_user = None
 
 def clear_human_review_state():
     st.session_state.pending_query = None
@@ -29,29 +38,27 @@ def clear_human_review_state():
     st.session_state.pending_session_id = None
     st.session_state.human_review_waiting = False
     st.session_state.pending_mode = None
-    if "comp_langchain_response" in st.session_state:
-        del st.session_state.comp_langchain_response
+    if 'comp_lc_res' in st.session_state:
+        del st.session_state.comp_lc_res
 
-
-def rewrite_query_for_display(query: str, session_id: str):
-    from src.langchain.history import get_session_history
-    from langchain_core.output_parsers import StrOutputParser
-    
-    history = get_session_history(session_id)
-    history_messages = history.messages
-    
-    history_str = "\n".join(
-        f"{'User' if m.type == 'human' else 'Assistant'}: {m.content}"
-        for m in history_messages
-    )
-    
-    rewriter_chain = query_rewriter_template | llm | StrOutputParser()
-    interpreted = rewriter_chain.invoke({
-        "user_input": query,
-        "history": history_str
-    })
-    return query, interpreted.strip().split('\n')[0]
-
+def call_chat_api(query, session_id, mode, use_human_review=False, edited_query=None):
+    """Generator that yields text chunks from the FastAPI stream."""
+    try:
+        payload = {
+            "query": query,
+            "session_id": session_id,
+            "mode": mode,
+            "use_human_review": use_human_review,
+            "edited_query": edited_query
+        }
+        with httpx.stream("POST", f"{API_URL}/chat", json=payload, timeout=60.0) as response:
+            response.raise_for_status()
+            for chunk in response.iter_text():
+                if chunk:
+                    yield chunk
+    except Exception as e:
+        st.error(f"API Error: {str(e)}")
+        yield f" Error connecting to backend: {str(e)}"
 
 def display_query_box(original: str, interpreted: str):
     col1, col2 = st.columns(2)
@@ -61,7 +68,6 @@ def display_query_box(original: str, interpreted: str):
     with col2:
         st.markdown("**Rewritten Question**")
         st.success(interpreted)
-
 
 def show_human_review_ui(mode: str):
     prompt = st.session_state.pending_query
@@ -85,110 +91,172 @@ def show_human_review_ui(mode: str):
             st.rerun()
         
         if proceed_btn:
-            actual_query = edited_q
-            run_langgraph_respond(prompt, session_id, actual_query)
+            run_langgraph_respond(prompt, session_id, edited_q)
             clear_human_review_state()
             st.rerun()
-
 
 def render_comparison_review(session_id):
     prompt = st.session_state.pending_query
     interpreted_q_lg = st.session_state.pending_interpreted
-    full_response1 = st.session_state.get("comp_langchain_response", "")
-
+    
     st.markdown("---")
     st.markdown("### Query Analysis")
-    
-    col_q1, col_q2 = st.columns(2)
-    with col_q1:
-        st.markdown("**LangChain Query**")
-        st.info(prompt)
-    with col_q2:
-        st.markdown("**LangGraph Query**")
-        st.info(interpreted_q_lg)
+    display_query_box(prompt, interpreted_q_lg)
     
     col1, col2 = st.columns(2)
     
-    # LEFT: LangChain (from storage or fresh run)
-    with col1:
-        st.markdown("### LangChain Response")
-        if full_response1:
-            st.markdown(full_response1)
-        else:
-            response_container1 = st.empty()
-            full_response1 = ""
-            for chunk in langchain_mode(prompt, session_id + "_lc"):
-                if isinstance(chunk, dict) and "__stats__" in chunk:
-                    pass
-                else:
-                    full_response1 += chunk
-                    response_container1.markdown(full_response1 + "▌")
-            response_container1.markdown(full_response1)
-            st.session_state.comp_langchain_response = full_response1
-    
-    # RIGHT: Human Review UI or LangGraph Response
+    if 'comp_lc_res' not in st.session_state:
+        st.session_state.comp_lc_res = ""
+        with col1:
+            st.markdown("### LangChain Response")
+            response_container_lc = st.empty()
+            for chunk in call_chat_api(prompt, session_id + "_lc", "LangChain"):
+                st.session_state.comp_lc_res += chunk
+                response_container_lc.markdown(st.session_state.comp_lc_res + "▌")
+            response_container_lc.markdown(st.session_state.comp_lc_res)
+    else:
+        with col1:
+            st.markdown("### LangChain Response")
+            st.markdown(st.session_state.comp_lc_res)
+            
+    full_res_lc = st.session_state.comp_lc_res
+
     with col2:
-        if "comp_langgraph_response" in st.session_state:
+        st.warning("Human Review Required")
+        edited_q = st.text_area("Edit query if needed:", value=interpreted_q_lg, height=80, key="comp_edit")
+        
+        if st.button("Proceed", key="comp_proceed"):
             st.markdown("### LangGraph Response")
-            st.markdown(st.session_state.comp_langgraph_response)
-        else:
-            st.warning("Human Review Required")
-            edited_q = st.text_area("Edit query if needed:", value=interpreted_q_lg, height=80, key="comp_edit")
+            response_container_lg = st.empty()
+            full_res_lg = ""
+            for chunk in call_chat_api(prompt, session_id + "_lg", "LangGraph", use_human_review=True, edited_query=edited_q):
+                full_res_lg += chunk
+                response_container_lg.markdown(full_res_lg + "▌")
+            response_container_lg.markdown(full_res_lg)
             
-            col_p, col_c = st.columns([1, 1])
-            with col_p:
-                proceed_btn = st.button("Proceed", key="comp_proceed")
-            with col_c:
-                cancel_btn = st.button("Cancel", key="comp_cancel")
-            
-            if cancel_btn:
-                clear_human_review_state()
+            st.session_state.messages.append({
+                "role": "assistant", 
+                "content": f"**Comparison Mode:**\n\n**LangChain:** {full_res_lc}\n\n---\n\n**LangGraph:** {full_res_lg}"
+            })
+            clear_human_review_state()
+            st.rerun()
+
+def run_langchain(prompt: str, session_id: str):
+    with st.chat_message("assistant"):
+        st.markdown("**LangChain Mode**")
+        response_container = st.empty()
+        full_response = ""
+        for chunk in call_chat_api(prompt, session_id, "LangChain"):
+            full_response += chunk
+            response_container.markdown(full_response + "▌")
+        response_container.markdown(full_response)
+        st.session_state.messages.append({"role": "assistant", "content": f"**LangChain Mode:**\n\n{full_response}"})
+
+def run_langgraph_respond(prompt: str, session_id: str, interpreted_query: str):
+    with st.chat_message("assistant"):
+        st.markdown("**LangGraph Mode**")
+        response_container = st.empty()
+        full_response = ""
+        for chunk in call_chat_api(prompt, session_id, "LangGraph", use_human_review=True, edited_query=interpreted_query):
+            full_response += chunk
+            response_container.markdown(full_response + "▌")
+        response_container.markdown(full_response)
+        st.session_state.messages.append({"role": "assistant", "content": f"**LangGraph Mode:**\n\n{full_response}"})
+
+def run_comparison(prompt: str, session_id: str):
+    st.markdown("---")
+    col1, col2 = st.columns(2)
+    
+    full_res_lc = ""
+    with col1:
+        st.markdown("### LangChain")
+        response_container_lc = st.empty()
+        for chunk in call_chat_api(prompt, session_id + "_lc", "LangChain"):
+            full_res_lc += chunk
+            response_container_lc.markdown(full_res_lc + "▌")
+        response_container_lc.markdown(full_res_lc)
+    
+    full_res_lg = ""
+    with col2:
+        st.markdown("### LangGraph")
+        response_container_lg = st.empty()
+        for chunk in call_chat_api(prompt, session_id + "_lg", "LangGraph"):
+            full_res_lg += chunk
+            response_container_lg.markdown(full_res_lg + "▌")
+        response_container_lg.markdown(full_res_lg)
+        
+    st.session_state.messages.append({
+        "role": "assistant", 
+        "content": f"**Comparison Mode:**\n\n**LangChain:** {full_res_lc}\n\n---\n\n**LangGraph:** {full_res_lg}"
+    })
+
+def admin_sidebar():
+    st.sidebar.title("🔐 Admin Portal")
+    
+    if not st.session_state.admin_logged_in:
+        email = st.sidebar.text_input("Email")
+        password = st.sidebar.text_input("Password", type="password")
+        if st.sidebar.button("Login"):
+            if email == ADMIN_CREDENTIALS["email"] and password == ADMIN_CREDENTIALS["password"]:
+                st.session_state.admin_logged_in = True
+                st.session_state.admin_user = ADMIN_CREDENTIALS["name"]
+                st.success(f"Welcome {st.session_state.admin_user}")
                 st.rerun()
+            else:
+                st.sidebar.error("Invalid credentials")
+    else:
+        st.sidebar.success(f"Logged in as: {st.session_state.admin_user}")
+        if st.sidebar.button("Logout"):
+            st.session_state.admin_logged_in = False
+            st.session_state.admin_user = None
+            st.rerun()
             
-            if proceed_btn:
-                actual_query = edited_q
-                st.markdown("### LangGraph Response")
-                response_container2 = st.empty()
-                full_response2 = ""
-                for chunk in langgraph_route_and_respond(prompt, session_id + "_lg", use_human_review=True, edited_query=actual_query):
-                    if isinstance(chunk, dict) and "__stats__" in chunk:
-                        pass
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("Add Knowledge")
+        category = st.sidebar.selectbox("Category", VALID_CATEGORIES)
+        new_content = st.sidebar.text_area("Content to add", height=150)
+        
+        if st.sidebar.button("Add Content"):
+            try:
+                payload = {
+                    "category": category,
+                    "content": new_content,
+                    "email": ADMIN_CREDENTIALS["email"],
+                    "password": ADMIN_CREDENTIALS["password"]
+                }
+                with httpx.Client() as client:
+                    res = client.post(f"{API_URL}/admin/add_content", json=payload)
+                    if res.status_code == 200:
+                        st.sidebar.success("Content added successfully!")
                     else:
-                        full_response2 += chunk
-                        response_container2.markdown(full_response2 + "▌")
-                response_container2.markdown(full_response2)
-                st.session_state.comp_langgraph_response = full_response2
-                
-                # Store in messages
-                st.session_state.messages.append({
-                    "role": "assistant", 
-                    "content": f"**Comparison Mode:**\n\n**LangChain:** {full_response1}\n\n---\n\n**LangGraph:** {full_response2}"
-                })
-                
-                # Cleanup and finish
-                if "comp_langgraph_response" in st.session_state:
-                    del st.session_state.comp_langgraph_response
-                clear_human_review_state()
-                st.rerun()
-
-
-if "pending_mode" not in st.session_state:
-    st.session_state.pending_mode = None
-
+                        st.sidebar.error(f"Failed: {res.text}")
+            except Exception as e:
+                st.sidebar.error(f"Error: {str(e)}")
+        
+        if st.sidebar.button("Refresh Vector Store"):
+            try:
+                payload = {
+                    "email": ADMIN_CREDENTIALS["email"],
+                    "password": ADMIN_CREDENTIALS["password"]
+                }
+                with httpx.Client() as client:
+                    res = client.post(f"{API_URL}/admin/refresh?category={category}", json=payload)
+                    if res.status_code == 200:
+                        st.sidebar.success(f"{category} store refreshed!")
+                    else:
+                        st.sidebar.error(f"Failed: {res.text}")
+            except Exception as e:
+                st.sidebar.error(f"Error: {str(e)}")
 
 def main():
     st.title("🤖 Benny AI - Unified Bot")
+    admin_sidebar()
     
     col1, col2 = st.columns([3, 1])
     with col1:
-        mode = st.radio(
-            "Select Mode:",
-            ["LangChain", "LangGraph", "Comparison"],
-            horizontal=True,
-            key="mode_selector"
-        )
+        mode = st.radio("Select Mode:", ["LangChain", "LangGraph", "Comparison"], horizontal=True)
     with col2:
-        if mode == "LangGraph" or mode == "Comparison":
+        if mode != "LangChain":
             st.session_state.human_review_toggle = st.toggle("Human Review", value=False)
 
     session_id = st.session_state.get("session_id", "default")
@@ -200,7 +268,6 @@ def main():
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
     
-    # FIRST: Check if waiting for human review (handles rerun after button click)
     if st.session_state.human_review_waiting:
         if st.session_state.pending_mode == "Comparison":
             render_comparison_review(session_id)
@@ -208,129 +275,35 @@ def main():
             show_human_review_ui(mode)
         return
     
-    # NEW SUBMISSION: User submits new query
     if prompt := st.chat_input("Ask me anything about Bennett University..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
         
         if mode == "LangChain":
-            with st.chat_message("user"):
-                st.markdown(prompt)
             run_langchain(prompt, session_id)
-        
         elif mode == "LangGraph":
-            original_q, interpreted_q = rewrite_query_for_display(prompt, session_id)
-            
-            with st.chat_message("user"):
-                st.markdown(prompt)
-            
             if st.session_state.human_review_toggle:
+                # We'll just assume interpretation is done on server or handle it
+                # For simplicity, we'll mark as waiting
                 st.session_state.pending_query = prompt
-                st.session_state.pending_interpreted = interpreted_q
+                st.session_state.pending_interpreted = prompt # Fallback
                 st.session_state.pending_session_id = session_id
                 st.session_state.pending_mode = "LangGraph"
                 st.session_state.human_review_waiting = True
                 st.rerun()
             else:
-                run_langgraph_respond(prompt, session_id, interpreted_q)
-        
+                run_langgraph_respond(prompt, session_id, prompt)
         else:
-            # Comparison mode
             if st.session_state.human_review_toggle:
-                original_q_lc, interpreted_q_lc = rewrite_query_for_display(prompt, session_id + "_lc")
-                original_q_lg, interpreted_q_lg = rewrite_query_for_display(prompt, session_id + "_lg")
-                
-                # Store in session state
                 st.session_state.pending_query = prompt
-                st.session_state.pending_interpreted = interpreted_q_lg
-                st.session_state.pending_interpreted_lc = interpreted_q_lc
+                st.session_state.pending_interpreted = prompt
                 st.session_state.pending_session_id = session_id
                 st.session_state.pending_mode = "Comparison"
                 st.session_state.human_review_waiting = True
                 st.rerun()
             else:
                 run_comparison(prompt, session_id)
-
-
-def run_langchain(prompt: str, session_id: str):
-    with st.chat_message("assistant"):
-        st.markdown("**LangChain Mode**")
-        original_q, interpreted_q = rewrite_query_for_display(prompt, session_id)
-        display_query_box(original_q, interpreted_q)
-        
-        response_container = st.empty()
-        full_response = ""
-        for chunk in langchain_mode(prompt, session_id):
-            if isinstance(chunk, dict) and "__stats__" in chunk:
-                pass
-            else:
-                full_response += chunk
-                response_container.markdown(full_response + "▌")
-        response_container.markdown(full_response)
-        st.session_state.messages.append({"role": "assistant", "content": f"**LangChain Mode:**\n\n{full_response}"})
-
-
-def run_langgraph_respond(prompt: str, session_id: str, interpreted_query: str):
-    st.markdown("**LangGraph Response:**")
-    response_container = st.empty()
-    full_response = ""
-    for chunk in langgraph_route_and_respond(prompt, session_id, use_human_review=True, edited_query=interpreted_query):
-        if isinstance(chunk, dict) and "__stats__" in chunk:
-            pass
-        else:
-            full_response += chunk
-            response_container.markdown(full_response + "▌")
-    response_container.markdown(full_response)
-    st.session_state.messages.append({"role": "assistant", "content": f"**LangGraph Mode:**\n\n{full_response}"})
-
-
-def run_comparison(prompt: str, base_session_id: str):
-    session_id = base_session_id
-    
-    original_q_lc, interpreted_q_lc = rewrite_query_for_display(prompt, session_id + "_lc")
-    original_q_lg, interpreted_q_lg = rewrite_query_for_display(prompt, session_id + "_lg")
-    
-    st.markdown("---")
-    st.markdown("### Query Analysis")
-    
-    col_q1, col_q2 = st.columns(2)
-    with col_q1:
-        st.markdown("**LangChain Query**")
-        display_query_box(original_q_lc, interpreted_q_lc)
-    with col_q2:
-        st.markdown("**LangGraph Query**")
-        display_query_box(original_q_lg, interpreted_q_lg)
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown("### LangChain Response")
-        response_container1 = st.empty()
-        full_response1 = ""
-        for chunk in langchain_mode(prompt, session_id + "_lc"):
-            if isinstance(chunk, dict) and "__stats__" in chunk:
-                pass
-            else:
-                full_response1 += chunk
-                response_container1.markdown(full_response1 + "▌")
-        response_container1.markdown(full_response1)
-    
-    with col2:
-        st.markdown("### LangGraph Response")
-        response_container2 = st.empty()
-        full_response2 = ""
-        for chunk in langgraph_route_and_respond(prompt, session_id + "_lg", use_human_review=False, edited_query=interpreted_q_lg):
-            if isinstance(chunk, dict) and "__stats__" in chunk:
-                pass
-            else:
-                full_response2 += chunk
-                response_container2.markdown(full_response2 + "▌")
-        response_container2.markdown(full_response2)
-    
-    st.session_state.messages.append({
-        "role": "assistant", 
-        "content": f"**Comparison Mode:**\n\n**LangChain:** {full_response1}\n\n---\n\n**LangGraph:** {full_response2}"
-    })
-
 
 if __name__ == "__main__":
     main()
