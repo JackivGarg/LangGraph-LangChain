@@ -8,12 +8,12 @@ import uvicorn
 # Ensure src is in path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
-from src.langchain import langchain_mode
-from src.agent import langgraph_route_and_respond
-from src.vectorstores.creator import create_vector_store
-from src.config import VALID_CATEGORIES
-from src.langchain.utils import rewrite_query
-from src.langchain.history import get_session_history
+from src.services.langchain_service import langchain_mode
+from src.agents.router import langgraph_route_and_respond
+from src.services.vector_store.creator import create_vector_store
+from src.core.config import VALID_CATEGORIES
+from src.services.rewrite_service import rewrite_query
+from src.utils.history import get_session_history
 
 app = FastAPI(title="Benny AI Backend")
 

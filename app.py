@@ -2,7 +2,7 @@ import sys
 import os
 import httpx
 import streamlit as st
-from src.config import VALID_CATEGORIES
+from src.core.config import VALID_CATEGORIES
 
 st.set_page_config(page_title="Benny AI - Unified Bot", page_icon="🤖", layout="wide")
 
@@ -108,11 +108,7 @@ def show_human_review_ui(mode: str):
 def render_comparison_review(session_id):
     prompt = st.session_state.pending_query
     interpreted_q_lg = st.session_state.pending_interpreted
-    
-    st.markdown("---")
-    st.markdown("### Query Analysis")
-    display_query_box(prompt, interpreted_q_lg)
-    
+
     col1, col2 = st.columns(2)
     
     if 'comp_lc_res' not in st.session_state:
