@@ -2,12 +2,7 @@ from src.agents.states.states import State, Route1
 from src.agents.prompts import router_template
 from dotenv import load_dotenv
 load_dotenv()
-from langchain_community.tools.tavily_search import TavilySearchResults
-
-tavily_tool = TavilySearchResults(
-    max_results=5,
-    search_depth="advanced"
-)
+from src.services.tavily_service import tavily_search as _tavily_search
 
 
 class Bot1:
@@ -29,12 +24,7 @@ class Bot1:
 
     def tavily_search_node(self, state: State) -> State:
         query = state["input"]
-        results = tavily_tool.invoke(query)
-
-        context = "\n".join(
-            f"- {r.get('title','')}\n  {r.get('content','')}\n  Source: {r.get('url','')}"
-            for r in results
-        )
+        context = _tavily_search(query)
 
         state["output"] = context
         state.setdefault("messages", []).append({

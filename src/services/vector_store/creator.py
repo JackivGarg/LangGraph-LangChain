@@ -17,7 +17,7 @@ def create_vector_store(txt_file: str, save_dir: str):
 
     texts = splitter.split_text(raw_text)
 
-    vectorstore = FAISS.from_texts(
+    vectorstore = FAISS.from_texts( 
         texts=texts,
         embedding=embedding,
         metadatas=[{"source": txt_file}] * len(texts)

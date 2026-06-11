@@ -24,12 +24,20 @@ VECTOR STORE CATEGORIES:
 - policies: refund policy, rules, regulations
 - general: about university, overview, misc
 
-STRICT RULES:
-- Always output structured data
+STRICT ROUTING RULES:
+- Use VECTOR_STORE ONLY if the question is specifically about Bennett University (admissions, fees, programs, hostel, placements, rules, campus life, etc.)
+- Use TAVILY_SEARCH if the question is about:
+  * Current events, news, sports results, scores
+  * Real-world facts not related to Bennett University
+  * Weather, stock prices, world records, general knowledge
+  * Anything happening in the world outside the university
+- Use SEND_EMAIL if the user explicitly wants to send an email
+- Use STOP if the conversation is complete or user says bye/thanks
 - If action is VECTOR_STORE, you MUST select one category
 - If action is NOT VECTOR_STORE, category MUST be "general"
 - Do NOT explain anything
 - Do NOT answer the user
+- Always output structured data
 
 Conversation History:
 {history}

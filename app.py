@@ -149,51 +149,53 @@ def render_comparison_review(session_id):
 
 def run_langchain(prompt: str, session_id: str):
     with st.chat_message("assistant"):
-        st.markdown("**LangChain Mode**")
+        st.caption("🔗 LangChain Mode")
         response_container = st.empty()
         full_response = ""
         for chunk in call_chat_api(prompt, session_id, "LangChain"):
             full_response += chunk
             response_container.markdown(full_response + "▌")
         response_container.markdown(full_response)
-        st.session_state.messages.append({"role": "assistant", "content": f"**LangChain Mode:**\n\n{full_response}"})
+        # Store ONLY raw response — no mode prefix — to avoid duplicate header on re-render
+        st.session_state.messages.append({"role": "assistant", "content": full_response})
 
 def run_langgraph_respond(prompt: str, session_id: str, interpreted_query: str):
     with st.chat_message("assistant"):
-        st.markdown("**LangGraph Mode**")
+        st.caption("🤖 LangGraph Mode")
         response_container = st.empty()
         full_response = ""
         for chunk in call_chat_api(prompt, session_id, "LangGraph", use_human_review=True, edited_query=interpreted_query):
             full_response += chunk
             response_container.markdown(full_response + "▌")
         response_container.markdown(full_response)
-        st.session_state.messages.append({"role": "assistant", "content": f"**LangGraph Mode:**\n\n{full_response}"})
+        # Store ONLY raw response — no mode prefix
+        st.session_state.messages.append({"role": "assistant", "content": full_response})
 
 def run_comparison(prompt: str, session_id: str):
-    st.markdown("---")
-    col1, col2 = st.columns(2)
-    
-    full_res_lc = ""
-    with col1:
-        st.markdown("### LangChain")
-        response_container_lc = st.empty()
-        for chunk in call_chat_api(prompt, session_id + "_lc", "LangChain"):
-            full_res_lc += chunk
-            response_container_lc.markdown(full_res_lc + "▌")
-        response_container_lc.markdown(full_res_lc)
-    
-    full_res_lg = ""
-    with col2:
-        st.markdown("### LangGraph")
-        response_container_lg = st.empty()
-        for chunk in call_chat_api(prompt, session_id + "_lg", "LangGraph"):
-            full_res_lg += chunk
-            response_container_lg.markdown(full_res_lg + "▌")
-        response_container_lg.markdown(full_res_lg)
-        
+    with st.chat_message("assistant"):
+        col1, col2 = st.columns(2)
+
+        full_res_lc = ""
+        with col1:
+            st.caption("🔗 LangChain")
+            response_container_lc = st.empty()
+            for chunk in call_chat_api(prompt, session_id + "_lc", "LangChain"):
+                full_res_lc += chunk
+                response_container_lc.markdown(full_res_lc + "▌")
+            response_container_lc.markdown(full_res_lc)
+
+        full_res_lg = ""
+        with col2:
+            st.caption("🤖 LangGraph")
+            response_container_lg = st.empty()
+            for chunk in call_chat_api(prompt, session_id + "_lg", "LangGraph"):
+                full_res_lg += chunk
+                response_container_lg.markdown(full_res_lg + "▌")
+            response_container_lg.markdown(full_res_lg)
+
     st.session_state.messages.append({
-        "role": "assistant", 
-        "content": f"**Comparison Mode:**\n\n**LangChain:** {full_res_lc}\n\n---\n\n**LangGraph:** {full_res_lg}"
+        "role": "assistant",
+        "content": f"**LangChain:** {full_res_lc}\n\n---\n\n**LangGraph:** {full_res_lg}"
     })
 
 def admin_sidebar():
